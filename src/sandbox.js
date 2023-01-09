@@ -3,6 +3,7 @@ const { join } = require('path')
 const { existsSync, statSync } = require('fs')
 const jsonfile = require('jsonfile')
 const zlib = require('zlib')
+require('../lib/cycle')
 const excludeList = new Set([
   '__config', '__env', '__utils', 'eval', 'global', 'Function', 'raw', 'view'
 ])
@@ -42,13 +43,13 @@ const box = {
       return typeof box.config.master === 'number' ? vm.getGlobal('data')?.sender?.user_id == box.config.master : box.config.master.includes(vm.getGlobal('data')?.sender?.user_id)
     },
     saveContext,
-    loadContext
+    loadContext,
   },
   config
 }
 const vm = new VM({
   wasm: false,
-  eval: false,
+  eval: true,
   sandbox: {
     __env: new Proxy({}, {
       get(t, k) {
@@ -92,6 +93,21 @@ const vm = new VM({
   },
   // timeout: 500
 })
+
+vm.run(`Object.defineProperties(JSON, {
+  decycle: {
+    writable:false,
+    enumerable:false,
+    configurable:false,
+    value:${JSON.decycle.toString()}
+  },
+  retrocycle:{
+    writable:false,
+    enumerable:false,
+    configurable:false,
+    value:${JSON.retrocycle.toString()}
+  }
+})`)
 
 vm.runFile(join(__dirname, './sandbox.code.js'))
 
@@ -183,13 +199,11 @@ function saveContext() {
     throw new Error('需提供配置项 [contextArchiveFile]')
   }
   const obj = {}
-  const o = vm.sandbox
-  let globalFlag = 0
-  const ctx = JSON.parse(JSON.stringify(o, (k, v) => {
-    if (k == '') return v
-    if ((k == 'global' || k == 'globalThis') && globalFlag != 2) return
-    return v
-  }))
+  const noGlobal = /^\$\["(global|globalThis)"\]$/
+  const ctx = JSON.decycle(vm.sandbox, (e, path) => {
+    if (noGlobal.test(path)) return
+    return e
+  })
   excludeList.forEach((v1) => delete ctx[v1])
 
   const saveFn = o => {
@@ -217,7 +231,7 @@ function saveContext() {
       }
     }
   }
-  saveFn(o)
+  saveFn(ctx)
   if (config.contextArchiveCompress) {
     jsonfile.writeFileSync(config.contextArchiveFile, {
       compress: true,
@@ -263,9 +277,37 @@ function loadContext() {
     const ctx = JSON.parse(zlib.brotliDecompressSync(Buffer.from(file.ctx, 'base64')).toString())
     const fn = JSON.parse(zlib.brotliDecompressSync(Buffer.from(file.fn, 'base64')).toString())
     vm.setGlobals(ctx)
+    let flag = 0
+    JSON.retrocycle(vm.sandbox, (e, k) => {
+      if ((k == 'global' || k == 'globalThis') && flag < 2) {
+        flag++
+        return
+      }
+      return e
+    })
+    // vm.run(`; (() => {
+    //   let flag = 0
+    //   global = JSON.retrocycle(global, e => {
+    //     if ((e.global == e || e.globalThis == e) && flag < 2) {
+    //       flag++
+    //       return
+    //     }
+    //     return e
+    //   })
+    // })()`)
+
     restoreFunctions(fn)
   } else {
     vm.setGlobals(file.ctx)
+    let flag = 0
+    JSON.retrocycle(vm.sandbox, (e, k) => {
+      if ((k == 'global' || k == 'globalThis') && flag < 2) {
+        flag++
+        return
+      }
+      return e
+    })
+
     restoreFunctions(file.fn)
   }
   return '读取成功'

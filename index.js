@@ -61,7 +61,7 @@ module.exports = {
       ...config
     }
     console.log(Date(), "sandbox启动", config)
-    worker = cp.fork(join(__dirname, './bridge.js'), {
+    worker = cp.fork(join(__dirname, './src/bridge.js'), {
       env: {
         config: JSON.stringify(config),
         ...process.env
