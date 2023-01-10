@@ -2,6 +2,7 @@ const { VM } = require('vm2')
 const { join } = require('path')
 const { existsSync, statSync } = require('fs')
 const jsonfile = require('jsonfile')
+const utils = require('./utils')
 const zlib = require('zlib')
 require('../lib/cycle')
 const excludeList = new Set([
@@ -9,6 +10,15 @@ const excludeList = new Set([
 ])
 /**@type {import('..').Cfg} */
 const config = JSON.parse(process.env.config)
+/**@type {LifeCycle} */
+let lifetime
+if (config.sandboxFile) {
+  try {
+    lifetime = require(config.sandboxFile)
+  } catch (error) {
+    console.error(`[sandboxFile] 读取失败`, error);
+  }
+}
 
 const box = {
   env: {
@@ -47,7 +57,7 @@ const box = {
   },
   config
 }
-const vm = new VM({
+const vmOptions = {
   wasm: false,
   eval: true,
   sandbox: {
@@ -91,102 +101,125 @@ const vm = new VM({
       }
     })
   },
-  // timeout: 500
-})
+  timeout: 500
+}
+const vm = new VM(vmOptions)
 
-vm.run(`Object.defineProperties(JSON, {
-  decycle: {
-    writable:false,
-    enumerable:false,
-    configurable:false,
-    value:${JSON.decycle.toString()}
-  },
-  retrocycle:{
-    writable:false,
-    enumerable:false,
-    configurable:false,
-    value:${JSON.retrocycle.toString()}
-  }
-})`)
+/**
+ * @typedef {Object} LifeCycle
+ * @prop {VoidFunction} [beforeInternalScript] 执行内部脚本前(执行完会冻结所有内置对象、增加内部对象)
+ * @prop {VoidFunction} [beforeLoadContext] 读取持久化上下文前
+ * @prop {VoidFunction} [onLoadContext] 读取持久化上下文后
+ * @typedef {typeof box} Box 配合 vmOptions 中的 sandbox 使用，访问隔离
+ * @typedef {typeof vmOptions} VMOptions 
+ * @typedef {VM} VM
+ * @typedef {typeof include} Include 传递一个外部对象到上下文对象
+ */
 
+module.exports = { box, vmOptions, vm, include }
+
+const funcReg = /^(function|\(.*?\)\s*=\s*>).+/
+let func
+// eval('console.log(box)')
+eval(`func =  ${funcReg.test(lifetime?.beforeInternalScript) ? lifetime.beforeInternalScript : 'function ' + lifetime?.beforeInternalScript};func?.();func=null`)
 vm.runFile(join(__dirname, './sandbox.code.js'))
-
+eval(`func= ${funcReg.test(lifetime?.beforeLoadContext) ? lifetime.beforeLoadContext : 'function ' + lifetime?.beforeLoadContext};func?.();func=null`)
 //读取上下文
 if (config.contextArchiveFile
   && existsSync(config.contextArchiveFile)
   && statSync(config.contextArchiveFile).size) loadContext()
 
-if (config.saveInterval) {
-  setInterval(saveContext, config.saveInterval);
-}
+eval(`func= ${funcReg.test(lifetime?.onLoadContext) ? lifetime.onLoadContext : 'function ' + lifetime?.onLoadContext};func?.();func=null`)
+
+if (config.saveInterval) setInterval(saveContext, config.saveInterval);
 
 box.env.initialized = true
 
-module.exports = {
-  vm,
-  /**
-   * 运行代码，返回结果
-   * @param {string} code
-   */
-  run(code) {
-    if (!box.env.initialized) {
-      console.log('沙盒尚未初始化');
-      return
+process.on('message',
+  /**@param {{
+   * id:string,
+   * code:string,
+   * beforeProc:string|(code:string,vm:VM)=>string,
+   * afterProc:string|(res:any,vm:VM)=>string,
+   * data?:any
+   * }} msg */
+  (msg, sendHandle) => {
+    msg.afterProc = new Function(`return ${msg.afterProc}`)()
+    msg.beforeProc = new Function(`return ${msg.beforeProc}`)()
+    if (msg.data) {
+      setData(msg.data)
     }
-    code = code.trim()
-    let debug = /^\\/.test(code)
-    if (debug) code = code.substring(1)
-    let res
-    try {
-      box.env.userCodeRunning = true
-      res = vm.run(code)
-    } catch (e) {
-      if (debug) {
-        /**@type {string[]} */
-        let line = e.stack.split("\n")
-        line.splice(2)
-        return `${line.join('\n')}\n...`
-      } else {
-        return
-      }
-    } finally {
-      box.env.userCodeRunning = false
-    }
-    if (res instanceof Promise) {
-      res = Promise.race([res, new Promise((res, rej) => setTimeout(() => {
-        rej(`Promise timeout. [${box.config.promiseTimeout}]`)
-      }, box.config.promiseTimeout))])
-    } else if (res == undefined) {
-      return debug ? '<undefined>' : res
-    }
-    return res
-  },
-  /**
-   * 传递一个外部对象到上下文对象，
+
+    let res = run(msg.beforeProc(msg.code, vm))
+    res = utils.filter(res)
+    process.send({
+      id: msg.id,
+      result: msg.afterProc(res, vm)
+    })
+  })
+
+if (config.saveCtxOnExit && config.contextArchiveFile) {
+  process.on('exit', code => {
+    saveContext()
+  })
+}
+
+/**
+   * 传递一个外部对象到上下文对象
    * @date 2023-01-08
    * @param {string} name 键
    * @param {any} obj 值
    * @param {Object} Obj
    * @param {boolean} Obj.freeze 是否不可修改
    * @param {boolean} Obj.exclude 是否不用持久化
-   * @returns {any}
    */
-  include(name, obj, { freeze = true, exclude = true }) {
-    // if (vm.getGlobal(name)) {
-    //   throw new Error(`属性 [${name}] 已存在于沙盒上下文中.`)
-    // } else {
-    if (freeze) vm.freeze(obj, name)
-    else vm.setGlobal(name, obj)
-    if (exclude) excludeList.add(name)
-    vm.run(`__utils.contextify(${name})`)
-    // }
-  },
-  setData(data) {
-    vm.setGlobal('data', data)
-    vm.run(`__utils.contextify(data)`)
-  },
-  saveContext,
-  loadContext
+function include(name, obj, { freeze = true, exclude = true }) {
+  if (freeze) vm.freeze(obj, name)
+  else vm.setGlobal(name, obj)
+  if (exclude) excludeList.add(name)
+  vm.run(`__utils.contextify(${name})`)
+}
+/**
+ * 运行代码，返回结果
+ * @param {string} code
+ */
+function run(code) {
+  if (!box.env.initialized) {
+    console.log('沙盒尚未初始化');
+    return
+  }
+  code = code.trim()
+  let debug = /^\\/.test(code)
+  if (debug) code = code.substring(1)
+  let res
+  try {
+    box.env.userCodeRunning = true
+    res = vm.run(code)
+  } catch (e) {
+    if (debug) {
+      /**@type {string[]} */
+      let line = e.stack.split("\n")
+      line.splice(2)
+      return `${line.join('\n')}\n...`
+    } else {
+      return
+    }
+  } finally {
+    box.env.userCodeRunning = false
+  }
+  if (res instanceof Promise) {
+    res = Promise.race([res, new Promise((res, rej) => setTimeout(() => {
+      rej(`Promise timeout. [${box.config.promiseTimeout}]`)
+    }, box.config.promiseTimeout))])
+  } else if (res == undefined) {
+    return debug ? '<undefined>' : res
+  }
+  return res
+}
+
+function setData(data) {
+  vm.setGlobal('data', data)
+  vm.run(`__utils.contextify(data)`)
 }
 
 /**
@@ -285,16 +318,6 @@ function loadContext() {
       }
       return e
     })
-    // vm.run(`; (() => {
-    //   let flag = 0
-    //   global = JSON.retrocycle(global, e => {
-    //     if ((e.global == e || e.globalThis == e) && flag < 2) {
-    //       flag++
-    //       return
-    //     }
-    //     return e
-    //   })
-    // })()`)
 
     restoreFunctions(fn)
   } else {

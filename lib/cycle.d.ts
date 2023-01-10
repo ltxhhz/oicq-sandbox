@@ -2,7 +2,7 @@
 type deReplacer = (e: any, path: string) => any
 type replacer = (e: any, k: string) => any
 
-export declare global {
+declare global {
   interface JSON {
     /**解开循环引用 */
     decycle: (object: any, replacer?: deReplacer) => any;
@@ -10,3 +10,5 @@ export declare global {
     retrocycle: ($: any, replacer?: deReplacer) => any;
   }
 }
+
+export {}

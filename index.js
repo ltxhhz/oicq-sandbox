@@ -5,27 +5,7 @@ const { randomUUID } = require('crypto')
 const cp = require("child_process")
 const { VM } = require('vm2')
 const utils = require("./src/utils")
-/**
- * @type {cp.ChildProcess}
- */
-let worker,
-  /**
-   * @type {(code:string,vm:VM)=>string}
-   */
-  beforeProc = (e, vm) => e,
-  /**
-   * res为undefined说明
-   * 1.运行结果为undefined 但debug==false
-   * 2.运行出错而失败
-   * @type {(res:any,vm:VM)=>string}
-   */
-  afterProc = (res, vm) => {
-    if (res == undefined) {
-      return res
-    } else {
-      return String(res)
-    }
-  }
+const EventEmitter = require("events")
 const defaultConfig = {
   restartOnExit: true,
   promiseTimeout: 2000,
@@ -49,52 +29,65 @@ const defaultConfig = {
  * @prop {number} [saveInterval] 是否自动保存 需提供 [contextArchiveFile]
  */
 
-module.exports = {
+class Sandbox extends EventEmitter {
+  /**
+   * @type {cp.ChildProcess}
+   */
+  worker
+  /**
+   * 执行代码前处理方法
+   * 沙盒中运行，不得依赖上下文
+   * @type {(code:string,vm:VM)=>string}
+   */
+  beforeProc = (e, vm) => e
+
+  //todo 
+  // logger
+  /**
+   * 执行代码后处理方法
+   * 沙盒中运行，不得依赖上下文
+   * 
+   * res为undefined说明
+   * 1.运行结果为 undefined 但 debug==false
+   * 2.运行出错而失败
+   * @type {(res:any,vm:VM)=>string}
+   */
+  afterProc = (res, vm) => {
+    if (res == undefined) {
+      return res
+    } else {
+      return String(res)
+    }
+  }
   /**
    * 启动一个子进程运行沙盒
    * @param {Cfg} config 配置
    */
-  start(config) {
+  constructor(config) {
     if (!config.master) throw new Error('需提供必选配置项')
-    config = {
+    super()
+    this.config = {
       ...defaultConfig,
       ...config
     }
-    console.log(Date(), "sandbox启动", config)
-    worker = cp.fork(join(__dirname, './src/bridge.js'), {
+    this.start()
+  }
+  start() {
+    console.log(Date(), "sandbox启动")
+    this.worker = cp.fork(join(__dirname, './src/sandbox.js'), {
       env: {
-        config: JSON.stringify(config),
+        config: JSON.stringify(this.config),
         ...process.env
       }
     })
-    worker.on('error', err => {
+    this.worker.on('error', err => {
       fs.appendFile("err.log", Date() + " " + err.stack + "\n", () => { })
     })
-    worker.on('exit', () => {
+    this.worker.on('exit', () => {
       console.log('sandbox 停止');
-      this.start(config)
+      this.start()
     })
-  },
-  restart() {
-    worker.kill()
-    // this.start()
-  },
-  /**
-   * 执行代码前处理方法
-   * 沙盒中运行，不得依赖上下文
-   * @param {(code:string,vm:VM) => string} func
-   */
-  setBeforeProc(func) {
-    beforeProc = func
-  },
-  /**
-   * 执行代码后处理方法
-   * 沙盒中运行，不得依赖上下文
-   * @param {(res: any, vm: VM) => string} func
-   */
-  setAfterProc(func) {
-    afterProc = func
-  },
+  }
   /**
    * 运行代码
    * @param {string} code
@@ -110,21 +103,30 @@ module.exports = {
       /**@type {(msg:{id:string,result?:string})=>string} */
       const listener = (msg) => {
         if (msg.id == id) {
-          worker.off('message', listener)
+          this.worker.off('message', listener)
           resolve(msg.result ? utils.fromCqcode(msg.result) : msg.result)
         }
       }
-      worker.on('message', listener)
+      this.worker.on('message', listener)
     })
-    worker.send({
+    this.worker.send({
       id,
       code: processCode(code),
-      beforeProc: '' + beforeProc,
-      afterProc: '' + afterProc,
+      beforeProc: '' + this.beforeProc,
+      afterProc: '' + this.afterProc,
       data
     })
     return prom
-  },
+  }
+
+  restart() {
+    this.worker.kill()
+  }
+}
+
+module.exports = {
+  Sandbox,
+  defineLifeCycle,
   ...utils
 }
 
@@ -155,4 +157,10 @@ function checkCode(code) {
  */
 function processCode(code) {
   return code
+}
+/**
+ * @param {import("./src/sandbox").LifeCycle} obj
+ */
+function defineLifeCycle(obj) {
+  return obj
 }
