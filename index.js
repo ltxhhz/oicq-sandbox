@@ -3,9 +3,11 @@ const { join } = require("path")
 const zlib = require('zlib')
 const { randomUUID } = require('crypto')
 const cp = require("child_process")
+const oicq = require('oicq')
 const { VM } = require('vm2')
 const utils = require("./src/utils")
 const EventEmitter = require("events")
+const { genCqcode } = require("./src/utils")
 const defaultConfig = {
   restartOnExit: true,
   promiseTimeout: 2000,
@@ -18,7 +20,7 @@ const defaultConfig = {
 }
 /**
  * @typedef {Object} Cfg
- * @prop {string} [sandboxFile] 需要导入沙盒上下文的文件
+ * @prop {string} [sandboxFile] 可在沙盒外层运行的文件
  * @prop {string} [contextArchiveFile] 保存上下文的json文件，默认工作目录 ./ctx.json
  * @prop {boolean} [contextArchiveCompress=false] 是否压缩保存
  * @prop {number|number[]} master 管理者qq
@@ -77,6 +79,7 @@ class Sandbox extends EventEmitter {
     this.worker = cp.fork(join(__dirname, './src/sandbox.js'), {
       env: {
         config: JSON.stringify(this.config),
+        sandboxRunning: true,
         ...process.env
       }
     })
@@ -90,12 +93,11 @@ class Sandbox extends EventEmitter {
   }
   /**
    * 运行代码
-   * @param {string} code
-   * @param {any} data 需要合并到沙盒的上下文data对象
+   * @param {oicq.PrivateMessageEvent | oicq.GroupMessageEvent | oicq.DiscussMessageEvent} data 需要合并到沙盒的上下文data对象
    * @return {Promise<string|undefined>}
    */
-  run(code, data) {
-    code = code.trim()
+  run(data) {
+    let code = genCqcode(data.message).trim()
     const c = checkCode(code)
     if (c) return c
     const id = randomUUID()
@@ -126,8 +128,7 @@ class Sandbox extends EventEmitter {
 
 module.exports = {
   Sandbox,
-  defineLifeCycle,
-  ...utils
+  defineLifeCycle
 }
 
 /**

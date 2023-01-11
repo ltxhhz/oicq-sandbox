@@ -2,16 +2,25 @@
   "name": "oicq-sandbox",
   "version": "1.0.0",
   "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ltxhhz/oicq-sandbox.git"
+  },
+  "engines": {
+    "node": ">= v14"
+  },
+  "homepage": "https://github.com/ltxhhz/oicq-sandbox#readme",
+  "bugs": "https://github.com/ltxhhz/oicq-sandbox/issues",
   "directories": {
     "lib": "lib"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
+  "keywords": ["oicq", "sandbox"],
+  "author": "ltxhhz",
+  "license": "MPL-2.0",
+  "description": "适用于 oicq 的 js 代码沙盒插件",
   "dependencies": {
     "jsonfile": "^6.1.0",
     "string.ify": "^1.0.64",
@@ -19,5 +28,9 @@
   },
   "devDependencies": {
     "oicq": "^2.3.1"
-  }
+  },
+  "files": [
+    "lib/**/*",
+    "src/**/*"
+  ]
 }

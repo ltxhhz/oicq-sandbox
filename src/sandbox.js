@@ -11,10 +11,10 @@ const excludeList = new Set([
 /**@type {import('..').Cfg} */
 const config = JSON.parse(process.env.config)
 /**@type {LifeCycle} */
-let lifetime
+let lifeCycle
 if (config.sandboxFile) {
   try {
-    lifetime = require(config.sandboxFile)
+    lifeCycle = require(config.sandboxFile)
   } catch (error) {
     console.error(`[sandboxFile] 读取失败`, error);
   }
@@ -101,7 +101,7 @@ const vmOptions = {
       }
     })
   },
-  timeout: 500
+  // timeout: 500
 }
 const vm = new VM(vmOptions)
 
@@ -121,15 +121,15 @@ module.exports = { box, vmOptions, vm, include }
 const funcReg = /^(function|\(.*?\)\s*=\s*>).+/
 let func
 // eval('console.log(box)')
-eval(`func =  ${funcReg.test(lifetime?.beforeInternalScript) ? lifetime.beforeInternalScript : 'function ' + lifetime?.beforeInternalScript};func?.();func=null`)
+eval(`func =  ${funcReg.test(lifeCycle?.beforeInternalScript) ? lifeCycle.beforeInternalScript : 'function ' + lifeCycle?.beforeInternalScript};func?.();func=null`)
 vm.runFile(join(__dirname, './sandbox.code.js'))
-eval(`func= ${funcReg.test(lifetime?.beforeLoadContext) ? lifetime.beforeLoadContext : 'function ' + lifetime?.beforeLoadContext};func?.();func=null`)
+eval(`func= ${funcReg.test(lifeCycle?.beforeLoadContext) ? lifeCycle.beforeLoadContext : 'function ' + lifeCycle?.beforeLoadContext};func?.();func=null`)
 //读取上下文
 if (config.contextArchiveFile
   && existsSync(config.contextArchiveFile)
   && statSync(config.contextArchiveFile).size) loadContext()
 
-eval(`func= ${funcReg.test(lifetime?.onLoadContext) ? lifetime.onLoadContext : 'function ' + lifetime?.onLoadContext};func?.();func=null`)
+eval(`func= ${funcReg.test(lifeCycle?.onLoadContext) ? lifeCycle.onLoadContext : 'function ' + lifeCycle?.onLoadContext};func?.();func=null`)
 
 if (config.saveInterval) setInterval(saveContext, config.saveInterval);
 
@@ -150,11 +150,12 @@ process.on('message',
       setData(msg.data)
     }
 
-    let res = run(msg.beforeProc(msg.code, vm))
-    res = utils.filter(res)
-    process.send({
-      id: msg.id,
-      result: msg.afterProc(res, vm)
+    run(msg.beforeProc(msg.code, vm)).then(res => {
+      res = utils.filter(res)
+      process.send({
+        id: msg.id,
+        result: msg.afterProc(res, vm)
+      })
     })
   })
 
@@ -183,7 +184,7 @@ function include(name, obj, { freeze = true, exclude = true }) {
  * 运行代码，返回结果
  * @param {string} code
  */
-function run(code) {
+async function run(code) {
   if (!box.env.initialized) {
     console.log('沙盒尚未初始化');
     return
@@ -208,9 +209,18 @@ function run(code) {
     box.env.userCodeRunning = false
   }
   if (res instanceof Promise) {
-    res = Promise.race([res, new Promise((res, rej) => setTimeout(() => {
-      rej(`Promise timeout. [${box.config.promiseTimeout}]`)
-    }, box.config.promiseTimeout))])
+    try {
+      res = await Promise.race([res, new Promise((res, rej) => setTimeout(() => {
+        rej(new Error(`Promise timeout. [${box.config.promiseTimeout}]`))
+      }, box.config.promiseTimeout))])
+    } catch (e) {
+      if (debug) {
+        /**@type {string[]} */
+        let line = e.stack.split("\n")
+        line.splice(2)
+        res = `${line.join('\n')}\n...`
+      }
+    }
   } else if (res == undefined) {
     return debug ? '<undefined>' : res
   }
