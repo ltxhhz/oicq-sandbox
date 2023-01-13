@@ -90,6 +90,7 @@ class Sandbox extends EventEmitter {
       console.log('sandbox 停止');
       this.start()
     })
+    return this
   }
   /**
    * 运行代码
@@ -137,7 +138,7 @@ module.exports = {
  * @param {string} code
  */
 function checkCode(code) {
-  if (/^([\d|\s]+|\[CQ:at,qq=\d+\]|true|false|null|undefined)$/.test(code)) {
+  if (/^([\d|\s]+|'\[CQ:at,qq=\d+\]'|true|false|null|undefined)$/.test(code)) {
     return Promise.resolve()
   }
   // 删除注释
