@@ -136,32 +136,39 @@ if (config.saveInterval) setInterval(saveContext, config.saveInterval);
 box.env.initialized = true
 
 process.on('message',
-  /**@param {{
-   * id:string,
-   * code:string,
-   * beforeProc:string|(code:string,vm:VM)=>string,
-   * afterProc:string|(res:any,vm:VM)=>string,
-   * data?:any
-   * }} msg */
+  /**@param {import('..').Msg} msg */
   (msg, sendHandle) => {
-    msg.afterProc = new Function(`return ${msg.afterProc}`)()
-    msg.beforeProc = new Function(`return ${msg.beforeProc}`)()
-    if (msg.data) {
-      setData(msg.data)
+    if (msg.type == 'default') {
+      msg.data.afterProc = new Function(`return ${msg.data.afterProc}`)()
+      msg.data.beforeProc = new Function(`return ${msg.data.beforeProc}`)()
+      if (msg.data.data) {
+        setData(msg.data.data)
+      }
+
+      run(msg.data.beforeProc(msg.data.code, vm)).then(res => {
+        res = utils.filter(res)
+        process.send({
+          id: msg.data.id,
+          result: msg.data.afterProc(res, vm)
+        })
+      })
+    } else {
+      if (msg.data.type == 'exit') {
+        if (config.saveCtxOnExit && config.contextArchiveFile) {
+          console.log('退出前保存');
+          saveContext()
+        }
+        process.exit()
+      }
     }
 
-    run(msg.beforeProc(msg.code, vm)).then(res => {
-      res = utils.filter(res)
-      process.send({
-        id: msg.id,
-        result: msg.afterProc(res, vm)
-      })
-    })
   })
 
 if (config.saveCtxOnExit && config.contextArchiveFile) {
-  process.on('exit', code => {
+  process.on('SIGINT', code => {
+    console.log('退出前保存');
     saveContext()
+    process.exit()
   })
 }
 

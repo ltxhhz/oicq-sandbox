@@ -31,6 +31,25 @@ const defaultConfig = {
  * @prop {number} [saveInterval] 是否自动保存 需提供 [contextArchiveFile]
  */
 
+/**
+ * @typedef {Object} CodeMsg
+ * @prop {string} id
+ * @prop {string} code
+ * @prop {string|(code:string,vm:VM)=>string} beforeProc
+ * @prop {string|(res:any,vm:VM)=>string} afterProc
+ * @prop {Object} data
+ */
+
+/**
+ * @typedef {Object} InternalMsg
+ * @prop {string} type
+ * @prop {any} data
+ */
+
+/**
+ * @typedef {{type:"default",data:CodeMsg}|{type:"internal",data:InternalMsg}} Msg
+ */
+
 class Sandbox extends EventEmitter {
   /**
    * @type {cp.ChildProcess}
@@ -113,17 +132,25 @@ class Sandbox extends EventEmitter {
       this.worker.on('message', listener)
     })
     this.worker.send({
-      id,
-      code: processCode(code),
-      beforeProc: '' + this.beforeProc,
-      afterProc: '' + this.afterProc,
-      data
+      type: 'default',
+      data: {
+        id,
+        code: processCode(code),
+        beforeProc: '' + this.beforeProc,
+        afterProc: '' + this.afterProc,
+        data
+      }
     })
     return prom
   }
 
   restart() {
-    this.worker.kill()
+    this.worker.send({
+      type: 'internal',
+      data: {
+        type: 'exit'
+      }
+    })
   }
 }
 
