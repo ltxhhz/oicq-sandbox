@@ -21,6 +21,7 @@ const ero = /(母狗|看批|日批|香批|批里|成人|无码|苍井空|b里|�
 //#endregion
 module.exports = {
   /**
+   * 消息对象转 cq 码
    * @param {oicq.MessageElem[]} content
    */
   genCqcode(content) {
@@ -43,6 +44,7 @@ module.exports = {
     return message
   },
   /**
+   * cq 码转消息对象
    * @param {string} str
    */
   fromCqcode(str) {
@@ -65,7 +67,10 @@ module.exports = {
     }
     return elems
   },
-  /**@param {any} msg */
+  /**
+   * 对象文本化和过滤
+   * @param {any} msg 
+   */
   filter(msg) {
     if (typeof msg === 'undefined') return
     else if (typeof msg !== 'string')

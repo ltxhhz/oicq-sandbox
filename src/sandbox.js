@@ -10,7 +10,7 @@ const excludeList = new Set([
 ])
 /**@type {import('..').Cfg} */
 const config = JSON.parse(process.env.config)
-/**@type {LifeCycle} */
+/**@type {LifeCycle|undefined} */
 let lifeCycle
 if (config.sandboxFile) {
   try {
@@ -19,6 +19,9 @@ if (config.sandboxFile) {
     console.error(`[sandboxFile] 读取失败`, error);
   }
 }
+
+const funcReg = /^(function|\(.*?\)\s*=\s*>).+/
+let func
 
 const box = {
   env: {
@@ -103,14 +106,32 @@ const vmOptions = {
   },
   // timeout: 500
 }
+
+if (lifeCycle?.beforeVMCreate) eval(`func= ${funcReg.test(lifeCycle?.beforeVMCreate) ? lifeCycle.beforeVMCreate : 'function ' + lifeCycle?.beforeVMCreate};func?.();func=null`)
+
+
 const vm = new VM(vmOptions)
 
 /**
+ * 
+ * 参数 `result` 为 `undefined` 说明:  
+ * 1.运行结果为 `undefined` 但 `debug==false`  
+ * 2.运行出错而失败
+ * @callback AfterCodeExec
+ * @param {any} result 运行结果
+ * @return any
+ */
+
+/**
  * @typedef {Object} LifeCycle
+ * @prop {VoidFunction} [beforeVMCreate] 创建虚拟机前
  * @prop {VoidFunction} [beforeInternalScript] 执行内部脚本前(执行完会冻结所有内置对象、增加内部对象)
  * @prop {VoidFunction} [beforeLoadContext] 读取持久化上下文前
  * @prop {VoidFunction} [onLoadContext] 读取持久化上下文后
- * @typedef {typeof box} Box 配合 vmOptions 中的 sandbox 使用，访问隔离
+ * @prop {(code:string)=>string} [beforeCodeExec] 代码执行前，返回处理过的代码
+ * @prop {(result:any)=>any} [afterCodeExec] 代码执行后，返回处理过的执行结果
+ * 
+ * @typedef {typeof box} Box 配合 `vmOptions` 中的 `sandbox` 使用，访问隔离
  * @typedef {typeof vmOptions} VMOptions 
  * @typedef {VM} VM
  * @typedef {typeof include} Include 传递一个外部对象到上下文对象
@@ -118,51 +139,52 @@ const vm = new VM(vmOptions)
 
 module.exports = { box, vmOptions, vm, include }
 
-const funcReg = /^(function|\(.*?\)\s*=\s*>).+/
-let func
-// eval('console.log(box)')
-eval(`func =  ${funcReg.test(lifeCycle?.beforeInternalScript) ? lifeCycle.beforeInternalScript : 'function ' + lifeCycle?.beforeInternalScript};func?.();func=null`)
+if (lifeCycle?.beforeInternalScript) eval(`func= ${funcReg.test(lifeCycle.beforeInternalScript) ? lifeCycle.beforeInternalScript : 'function ' + lifeCycle.beforeInternalScript};func?.();func=null`)
+
 vm.runFile(join(__dirname, './sandbox.code.js'))
-eval(`func= ${funcReg.test(lifeCycle?.beforeLoadContext) ? lifeCycle.beforeLoadContext : 'function ' + lifeCycle?.beforeLoadContext};func?.();func=null`)
+
+if (lifeCycle?.beforeLoadContext) eval(`func= ${funcReg.test(lifeCycle.beforeLoadContext) ? lifeCycle.beforeLoadContext : 'function ' + lifeCycle.beforeLoadContext};func?.();func=null`)
+
 //读取上下文
 if (config.contextArchiveFile
   && existsSync(config.contextArchiveFile)
   && statSync(config.contextArchiveFile).size) loadContext()
 
-eval(`func= ${funcReg.test(lifeCycle?.onLoadContext) ? lifeCycle.onLoadContext : 'function ' + lifeCycle?.onLoadContext};func?.();func=null`)
+if (lifeCycle?.onLoadContext) eval(`func= ${funcReg.test(lifeCycle.onLoadContext) ? lifeCycle.onLoadContext : 'function ' + lifeCycle.onLoadContext};func?.();func=null`)
 
-if (config.saveInterval) setInterval(saveContext, config.saveInterval);
+if (config.saveInterval) {
+  console.log('开启定时保存上下文');
+  setInterval(saveContext, config.saveInterval);
+}
 
 box.env.initialized = true
 
-process.on('message',
-  /**@param {import('..').Msg} msg */
-  (msg, sendHandle) => {
-    if (msg.type == 'default') {
-      msg.data.afterProc = new Function(`return ${msg.data.afterProc}`)()
-      msg.data.beforeProc = new Function(`return ${msg.data.beforeProc}`)()
-      if (msg.data.data) {
-        setData(msg.data.data)
-      }
+const beforeExec = lifeCycle?.beforeCodeExec ? eval(`func= ${funcReg.test(lifeCycle?.beforeCodeExec) ? lifeCycle.beforeCodeExec : 'function ' + lifeCycle.beforeCodeExec}`) : e => e,
+  afterExec = lifeCycle?.afterCodeExec ? eval(`func= ${funcReg.test(lifeCycle.afterCodeExec) ? lifeCycle.afterCodeExec : 'function ' + lifeCycle.afterCodeExec}`) : res => res == undefined ? res : String(res)
 
-      run(msg.data.beforeProc(msg.data.code, vm)).then(res => {
-        res = utils.filter(res)
-        process.send({
-          id: msg.data.id,
-          result: msg.data.afterProc(res, vm)
-        })
+
+process.on('message',/**@param {import('..').Msg} msg */(msg, sendHandle) => {
+  if (msg.type == 'default') {
+    if (msg.data.data) setData(msg.data.data)
+
+    run(beforeExec(msg.data.code, vm)).then(res => {
+      res = utils.filter(res)
+      process.send({
+        id: msg.data.id,
+        result: afterExec(res, vm)
       })
-    } else {
-      if (msg.data.type == 'exit') {
-        if (config.saveCtxOnExit && config.contextArchiveFile) {
-          console.log('退出前保存');
-          saveContext()
-        }
-        process.exit()
+    })
+  } else {
+    if (msg.data.type == 'exit') {
+      if (config.saveCtxOnExit && config.contextArchiveFile) {
+        console.log('退出前保存');
+        saveContext()
       }
+      process.exit()
     }
+  }
 
-  })
+})
 
 if (config.saveCtxOnExit && config.contextArchiveFile) {
   process.on('SIGINT', code => {

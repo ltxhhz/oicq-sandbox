@@ -7,11 +7,13 @@ const oicq = require('oicq')
 const { VM } = require('vm2')
 const utils = require("./src/utils")
 const EventEmitter = require("events")
-const { genCqcode } = require("./src/utils")
+/**@type {Cfg} */
 const defaultConfig = {
   restartOnExit: true,
   promiseTimeout: 2000,
+  cqCodeEnable: true,
   contextArchiveFile: join(process.cwd(), './ctx.json'),
+  errLogFile: join(process.cwd(), './err.log'),
   brotliOptions: {
     params: {
       [zlib.constants.BROTLI_PARAM_QUALITY]: 5
@@ -21,22 +23,22 @@ const defaultConfig = {
 /**
  * @typedef {Object} Cfg
  * @prop {string} [sandboxFile] 可在沙盒外层运行的文件
- * @prop {string} [contextArchiveFile] 保存上下文的json文件，默认工作目录 ./ctx.json
- * @prop {boolean} [contextArchiveCompress=false] 是否压缩保存
+ * @prop {string} [contextArchiveFile] 保存上下文的json文件，默认工作目录下 `./ctx.json`
+ * @prop {string} [errLogFile] 错误日志文件，传入假值则不输出，默认工作目录下 `./err.log`
+ * @prop {boolean} [contextArchiveCompress=false] 是否压缩保存，默认 `false`
  * @prop {number|number[]} master 管理者qq
- * @prop {number} [promiseTimeout=2000] 执行代码返回 Promise 时超时的时间(ms)
- * @prop {boolean} [saveCtxOnExit=false] 沙盒进程退出时保存上下文，需提供 [contextArchiveFile]
- * @prop {boolean} [restartOnExit=true] 沙盒进程退出时重启
- * @prop {zlib.BrotliOptions} [brotliOptions] 压缩选项
- * @prop {number} [saveInterval] 是否自动保存 需提供 [contextArchiveFile]
+ * @prop {boolean} [cqCodeEnable=true] 启用cq码，默认 `true`
+ * @prop {number} [promiseTimeout=2000] 执行代码返回 `Promise` 时超时的时间 (ms)，默认 `2000`
+ * @prop {boolean} [saveCtxOnExit=false] 沙盒进程退出时保存上下文，默认 `false`
+ * @prop {boolean} [restartOnExit=true] 沙盒进程退出时重启，默认 `true`
+ * @prop {zlib.BrotliOptions} [brotliOptions] 压缩选项，默认 `{params: {[zlib.constants.BROTLI_PARAM_QUALITY]: 5}} `
+ * @prop {number} [saveInterval] 是否自动保存
  */
 
 /**
  * @typedef {Object} CodeMsg
  * @prop {string} id
  * @prop {string} code
- * @prop {string|(code:string,vm:VM)=>string} beforeProc
- * @prop {string|(res:any,vm:VM)=>string} afterProc
  * @prop {Object} data
  */
 
@@ -49,7 +51,9 @@ const defaultConfig = {
 /**
  * @typedef {{type:"default",data:CodeMsg}|{type:"internal",data:InternalMsg}} Msg
  */
-
+/**
+ * @template {any} T
+ */
 class Sandbox extends EventEmitter {
   /**
    * @type {cp.ChildProcess}
@@ -58,11 +62,12 @@ class Sandbox extends EventEmitter {
   /**
    * 执行代码前处理方法
    * 沙盒中运行，不得依赖上下文
+   * @deprecated 已经无效，使用 `[sandboxFile]` 中的 `beforeCodeExec` 替换
    * @type {(code:string,vm:VM)=>string}
    */
   beforeProc = (e, vm) => e
 
-  //todo 
+  //todo
   // logger
   /**
    * 执行代码后处理方法
@@ -71,6 +76,7 @@ class Sandbox extends EventEmitter {
    * res为undefined说明
    * 1.运行结果为 undefined 但 debug==false
    * 2.运行出错而失败
+   * @deprecated 已经无效，使用 `sandboxFile` 中的 `afterCodeExec` 替换
    * @type {(res:any,vm:VM)=>string}
    */
   afterProc = (res, vm) => {
@@ -80,6 +86,31 @@ class Sandbox extends EventEmitter {
       return String(res)
     }
   }
+  /**
+   * @typedef {Object} DataPreProcResult
+   * @prop {string} [msgKey="message"] 消息键名，默认 `"message"`
+   * @prop {T} data
+   * @prop {string} code 需要执行的代码
+   */
+  /**
+   * @typedef {Object} DataPreProcResult1
+   * @prop {Promise<string|undefined>} [result] 如果不为空则直接作为结果返回
+   */
+  /** 
+   * @callback DataPreProc
+   * @param {T} data
+   * @return {DataPreProcResult|DataPreProcResult1}
+   */
+
+  /**
+   * data 预处理函数
+   * @type {DataPreProc?}
+   */
+  dataPreProc
+
+  /**@type {Cfg} */
+  config
+
   /**
    * 启动一个子进程运行沙盒
    * @param {Cfg} config 配置
@@ -103,35 +134,43 @@ class Sandbox extends EventEmitter {
       }
     })
     this.worker.on('error', err => {
-      fs.appendFile("err.log", Date() + " " + err.stack + "\n", () => { })
+      if (this.config.errLogFile) fs.appendFile(this.config.errLogFile, Date() + " " + err.stack + "\n", () => { })
     })
     this.worker.on('exit', () => {
       console.log('sandbox 停止');
-      this.start()
+      if (this.config.restartOnExit) this.start()
     })
     return this
   }
   /**
    * 运行代码
-   * @param {oicq.PrivateMessageEvent | oicq.GroupMessageEvent | oicq.DiscussMessageEvent} data 需要合并到沙盒的上下文data对象
+   * @param {oicq.PrivateMessageEvent | oicq.GroupMessageEvent | oicq.DiscussMessageEvent | T} data 需要合并到沙盒的上下文data对象
    * @return {Promise<string|undefined>}
    */
   run(data) {
-    let code = genCqcode(data.message).trim()
-    const c = checkCode(code)
-    if (c) return c
+    /**@type {string} */
+    let code
+    if (this.dataPreProc) {
+      const c = this.dataPreProc(data)
+      if (c.result) return c.result
+      code = this.config.cqCodeEnable ? utils.genCqcode(c.code) : c.code
+    } else {
+      code = this.config.cqCodeEnable ? utils.genCqcode(data.message).trim() : data.raw_message
+      const c = checkCode(code)
+      if (c) return c
+    }
     const id = randomUUID()
     const prom = new Promise((resolve, reject) => {
       /**@type {(msg:{id:string,result?:string})=>string} */
       const listener = (msg) => {
         if (msg.id == id) {
           this.worker.off('message', listener)
-          resolve(msg.result ? utils.fromCqcode(msg.result) : msg.result)
+          resolve(msg.result ? this.config.cqCodeEnable ? utils.fromCqcode(msg.result) : msg.result : undefined)
         }
       }
       this.worker.on('message', listener)
     })
-    this.worker.send({
+    this.worker.send(/** @type {Msg} */({
       type: 'default',
       data: {
         id,
@@ -140,23 +179,34 @@ class Sandbox extends EventEmitter {
         afterProc: '' + this.afterProc,
         data
       }
-    })
+    }))
     return prom
   }
-
+  /**
+   * 重启沙盒
+   */
   restart() {
-    this.worker.send({
-      type: 'internal',
-      data: {
-        type: 'exit'
-      }
-    })
+    if (this.worker.killed) {
+      this.start()
+    } else {
+      this.worker.send(/** @type {Msg} */({
+        type: 'internal',
+        data: {
+          type: 'exit'
+        }
+      }))
+    }
   }
 }
 
 module.exports = {
   Sandbox,
-  defineLifeCycle
+  /**
+   * @param {import("./src/sandbox").LifeCycle} obj
+   */
+  defineLifeCycle(obj) {
+    return obj
+  }
 }
 
 /**
@@ -186,10 +236,4 @@ function checkCode(code) {
  */
 function processCode(code) {
   return code
-}
-/**
- * @param {import("./src/sandbox").LifeCycle} obj
- */
-function defineLifeCycle(obj) {
-  return obj
 }
