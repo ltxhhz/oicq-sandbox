@@ -1,4 +1,5 @@
 const oicq = require('oicq')
+const querystring = require('querystring')
 const stringify = require('string.ify')
 const stringifyConfigure = stringify.configure({
   pure: false,
@@ -25,23 +26,19 @@ module.exports = {
    * @param {oicq.MessageElem[]} content
    */
   genCqcode(content) {
-    let message = ''
+    let cqcode = ""
     for (let elem of content) {
       if (elem.type === "text") {
-        message += elem.text
-      } else if (elem.type === "at") {
-        message += `'[CQ:at,qq=${elem.qq}]'`
-      } else {
-        for (let k in elem) {
-          if (k === "type")
-            message += `[CQ:${elem.type}`
-          else
-            message += `,${k}=${elem[k]}`
-        }
-        message += `]`
+        cqcode += elem.text
+        continue
       }
+      const tmp = { ...elem }
+      if (tmp.type == 'json') tmp.data = JSON.stringify(tmp.data)
+      delete tmp.type
+      const str = querystring.stringify(tmp, ",", "=", { encodeURIComponent: (s) => s.replace(/&|,|\[|\]/g, escapeCQInside) })
+      cqcode += "[CQ:" + elem.type + (str ? "," : "") + str + "]"
     }
-    return message
+    return cqcode
   },
   /**
    * cq 码转消息对象
@@ -58,7 +55,18 @@ module.exports = {
       const element = v[0]
       let cq = element.replace("[CQ:", "type=")
       cq = cq.substring(0, cq.length - 1)
-      elems.push(qs(cq))
+      elems.push(querystring.parse(cq, ',', '=', {
+        decodeURIComponent: s => s.replace(/&#44;|&#91;|&#93;|&amp;/g, unescapeCQInside)
+      }))
+      const el = elems[elems.length - 1]
+      for (const k in el) {
+        if (k != 'text') {
+          try {
+            el[k] = JSON.parse(el[k])
+          } catch (error) { }
+        }
+      }
+
       prev_index = v.index + element.length
     }
     if (prev_index < str.length) {
@@ -90,6 +98,15 @@ function unescapeCQ(s) {
   if (s === "&amp;") return "&"
   return ""
 }
+
+function escapeCQInside(s) {
+  if (s === "&") return "&amp;"
+  if (s === ",") return "&#44;"
+  if (s === "[") return "&#91;"
+  if (s === "]") return "&#93;"
+  return ""
+}
+
 /**
  * 描述
  * @date 2023-01-02
@@ -101,27 +118,4 @@ function unescapeCQInside(s) {
   if (s === "&#93;") return "]"
   if (s === "&amp;") return "&"
   return ""
-}
-/**
- * 描述
- * @date 2023-01-02
- * @param {string} s
- * @param {string} [sep=","]
- * @param {string} [equal="="]
- * @returns {oicq.MessageElem}
- */
-function qs(s, sep = ",", equal = "=") {
-  const ret = {}
-  const split = s.split(sep)
-  for (let v of split) {
-    const i = v.indexOf(equal)
-    if (i === -1) continue
-    ret[v.substring(0, i)] = v.substring(i + 1).replace(/&#44;|&#91;|&#93;|&amp;/g, unescapeCQInside)
-  }
-  for (let k in ret) {
-    try {
-      if (k !== "text") ret[k] = JSON.parse(ret[k])
-    } catch { }
-  }
-  return ret
 }
