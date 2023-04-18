@@ -24,7 +24,7 @@
   "dependencies": {
     "jsonfile": "^6.1.0",
     "string.ify": "^1.0.64",
-    "vm2": "^3.9.13"
+    "vm2": "^3.9.16"
   },
   "devDependencies": {
     "oicq": "^2.3.1"
